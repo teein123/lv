@@ -1,5 +1,5 @@
 import streamlit as st
-import akshare as ak
+import yfinance as yf
 import pandas as pd
 import numpy as np
 import traceback
@@ -11,64 +11,58 @@ st.set_page_config(
     page_title="缠论分析", 
     layout="centered"
 )
-st.title("📈 简易缠论分析")
+st.title("📈 简易缠论分析 (雅虎源)")
 
 # ==========================================
-# 1. 核心数据获取 (增强版)
+# 1. 核心数据获取 (雅虎财经版)
 # ==========================================
 @st.cache_data(ttl=600) 
 def get_stock_data(code_input):
-    # 清洗代码
-    symbol = code_input.replace('sh.', '').replace('sz.', '').strip()
+    # 1. 处理代码格式
+    symbol = code_input.strip()
     
-    # 时间设定 (最近365天)
-    end_dt = pd.Timestamp.now().strftime('%Y%m%d')
-    start_dt = (pd.Timestamp.now() - pd.Timedelta(days=365)).strftime('%Y%m%d')
+    # 雅虎财经规则：沪市加.SS，深市加.SZ
+    # 简单的判断逻辑：6开头是沪市，0或3开头是深市
+    if symbol.isdigit():
+        if symbol.startswith('6'):
+            symbol = symbol + ".SS"
+        elif symbol.startswith('0') or symbol.startswith('3'):
+            symbol = symbol + ".SZ"
+        elif symbol.startswith('4') or symbol.startswith('8'):
+            symbol = symbol + ".BJ" # 北交所
     
-    # --- 尝试线路 1 (东方财富 - 历史行情) ---
+    # 2. 获取数据
     try:
-        df = ak.stock_zh_a_hist(
-            symbol=symbol, 
-            period="daily", 
-            start_date=start_dt, 
-            end_date=end_dt, 
-            adjust="qfq"
-        )
-        if not df.empty:
-            # 统一列名
-            df = df.rename(columns={
-                '日期': 'date', '开盘': 'open', '收盘': 'close', 
-                '最高': 'high', '最低': 'low', '成交量': 'volume'
-            })
-            df['date'] = pd.to_datetime(df['date'])
-            return df, "线路1 (历史行情)"
-    except Exception as e1:
-        st.warning(f"⚠️ 线路1访问受阻，正在尝试线路2... (错误: {str(e1)})")
-
-    # --- 尝试线路 2 (实时行情 - 最近交易日) ---
-    # 如果海外IP被封历史接口，有时候实时接口能通
-    try:
-        df = ak.stock_zh_a_spot_em()
-        # 筛选单只股票
-        df = df[df['代码'] == symbol]
-        if not df.empty:
-            # 只有一行数据，虽然不能画图，但至少能证明连通性
-            # 这里为了跑通缠论，我们其实需要历史数据，如果线路1挂了，
-            # 线路2通常只能救急看当前价，无法计算MACD。
-            # 所以这里抛出更详细的错误给用户
-            raise Exception("无法获取历史K线，无法计算指标")
-    except Exception as e2:
-        pass
-
-    return pd.DataFrame(), f"所有线路均失败。请查看下方错误详情。"
+        # 获取最近2年的数据
+        stock = yf.Ticker(symbol)
+        df = stock.history(period="2y")
+        
+        if df.empty: return pd.DataFrame()
+        
+        # 3. 数据清洗 (统一成你的算法需要的格式)
+        df = df.reset_index()
+        # 雅虎的列名是 Date, Open, High, Low, Close, Volume
+        df = df.rename(columns={
+            'Date': 'date', 'Open': 'open', 'Close': 'close', 
+            'High': 'high', 'Low': 'low', 'Volume': 'volume'
+        })
+        
+        # 移除时区信息，防止报错
+        df['date'] = df['date'].dt.tz_localize(None)
+        
+        return df
+    except Exception as e:
+        print(f"Error: {e}")
+        return pd.DataFrame()
 
 # ==========================================
-# 2. 缠论计算逻辑
+# 2. 缠论计算逻辑 (保持不变)
 # ==========================================
 def calculate_indicators(df):
     df = df.copy()
-    for c in ['close', 'high', 'low']: 
-        df[c] = pd.to_numeric(df[c], errors='coerce')
+    # 确保数值类型
+    cols = ['close', 'high', 'low']
+    for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce')
     
     df['ema12'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema26'] = df['close'].ewm(span=26, adjust=False).mean()
@@ -80,6 +74,7 @@ def calculate_indicators(df):
 def preprocess_inclusion(df):
     if len(df) < 2: return df
     data = df.to_dict('records')
+    # 初始化
     for d in data: 
         if 'real_date' not in d: d['real_date'] = d['date']
 
@@ -90,6 +85,7 @@ def preprocess_inclusion(df):
     for i in range(1, len(data)):
         cur = data[i]
         last = processed[-1]
+        
         is_cur_in = (cur['high'] <= last['high'] and cur['low'] >= last['low'])
         is_last_in = (cur['high'] >= last['high'] and cur['low'] <= last['low'])
         
@@ -110,10 +106,12 @@ def preprocess_inclusion(df):
 
 def calculate_bi(df):
     if len(df) < 10: return []
+    # 包含处理
     k_df = preprocess_inclusion(df)
     k_df = k_df.reset_index(drop=True)
     if len(k_df) < 5: return []
 
+    # 分型
     k_df['fx_type'] = 0 
     for i in range(1, len(k_df)-1):
         prev = k_df.iloc[i-1]; curr = k_df.iloc[i]; next_ = k_df.iloc[i+1]
@@ -125,6 +123,7 @@ def calculate_bi(df):
     fractals = k_df[k_df['fx_type'] != 0].copy()
     if len(fractals) < 2: return []
 
+    # 笔生成
     bi_list = []
     stack = [fractals.iloc[0]]
     for i in range(1, len(fractals)):
@@ -136,8 +135,10 @@ def calculate_bi(df):
         elif curr.name - last.name >= 3:
             stack.append(curr)
             start_n = stack[-2]; end_n = stack[-1]
+            # 计算力度
             sub_df = df[(df['date'] >= start_n['real_date']) & (df['date'] <= end_n['real_date'])]
             macd_sum = sub_df['macd'].abs().sum() if 'macd' in sub_df.columns else 0
+            
             bi_list.append({
                 '方向': '向上' if start_n['fx_type'] == -1 else '向下',
                 '日期': end_n['real_date'].strftime('%Y-%m-%d'),
@@ -152,17 +153,15 @@ def calculate_bi(df):
 code = st.text_input("输入股票代码", value="600519", placeholder="例如 600519")
 
 if st.button("开始分析 🚀"):
-    with st.spinner("正在连接国内数据源 (可能较慢)..."):
+    with st.spinner("正在连接 Yahoo Finance (美国线路)..."):
         try:
-            df, source_name = get_stock_data(code)
+            df = get_stock_data(code)
             
             if df.empty:
-                st.error("❌ 数据获取失败")
-                st.write("可能原因：")
-                st.write("1. 股票代码错误 (请输入6位数字)")
-                st.write("2. 云服务器IP被国内拦截 (请查看上方黄色警告信息)")
+                st.error(f"❌ 获取失败: {code}")
+                st.write("请检查代码是否正确。")
             else:
-                st.success(f"✅ 获取成功 ({source_name}): {code}")
+                st.success(f"✅ 获取成功 (Yahoo源): {code}")
                 
                 df = calculate_indicators(df)
                 bi_data = calculate_bi(df)
@@ -171,6 +170,7 @@ if st.button("开始分析 🚀"):
                     last_bi = bi_data[0]
                     trend = last_bi['方向']
                     msg = f"当前 **{trend}笔** 延伸中 | 力度: {last_bi['MACD力度']}"
+                    
                     if trend == '向上': st.info(msg)
                     else: st.warning(msg)
                     
