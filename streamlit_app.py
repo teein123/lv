@@ -9,7 +9,7 @@ import traceback
 # ==========================================
 st.set_page_config(
     page_title="缠论分析", 
-    layout="mobile"
+    layout="centered"
 )
 st.title("📈 简易缠论分析")
 
