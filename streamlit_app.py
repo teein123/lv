@@ -9,8 +9,8 @@ import traceback
 # 页面配置
 # ==========================================
 st.set_page_config(
-    page_title="AI缠论投喂系统 v4.0",
-    page_icon="📈",
+    page_title="AI缠论投喂系统 v5.0",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -41,19 +41,21 @@ def calculate_macd(df):
     return df
 
 # ==========================================
-# 2. 基础力度计算 (净面积逻辑)
+# 2. 基础力度计算 (修改：同向柱子累计)
 # ==========================================
 def get_segment_metrics_by_date(raw_df, start_date, end_date, direction):
     mask = (raw_df['date'] >= start_date) & (raw_df['date'] <= end_date)
     segment_df = raw_df.loc[mask].copy()
     if segment_df.empty: return 0.0, 0.0, 0.0
 
-    macd_area = segment_df['macd'].sum()
-    
+    # 【修改点】：只统计同向颜色的柱子面积
     if direction == '向上':
+        # 向上笔：只加红柱子 (macd > 0)
+        macd_area = segment_df[segment_df['macd'] > 0]['macd'].sum()
         idx_price = segment_df['high'].idxmax()
     else:
-        macd_area = abs(macd_area)
+        # 向下笔：只加绿柱子 (macd < 0)，取绝对值
+        macd_area = abs(segment_df[segment_df['macd'] < 0]['macd'].sum())
         idx_price = segment_df['low'].idxmin()
     
     peak_dif = segment_df.loc[idx_price, 'dif']
@@ -174,7 +176,7 @@ def calculate_chanlun_structure(df):
     return bi_list
 
 # ==========================================
-# 5. 智能量能分析 (逻辑K线版)
+# 5. 智能量能分析 (修改：同向柱子累计)
 # ==========================================
 def analyze_unformed_segment(df, last_bi):
     last_end_date = last_bi['end_date']
@@ -197,14 +199,16 @@ def analyze_unformed_segment(df, last_bi):
     physical_count = len(unformed_df)
     logical_df = preprocess_inclusion(unformed_df)
     logical_count = len(logical_df)
-    
     current_avg_vol = unformed_df['volume'].mean() / 10000
 
-    macd_area = unformed_df['macd'].sum()
+    # 【修改点】：同步基础力度的计算逻辑
     if current_dir == '向上':
+        # 只加红柱子
+        macd_area = unformed_df[unformed_df['macd'] > 0]['macd'].sum()
         peak_dif = unformed_df.loc[unformed_df['high'].idxmax(), 'dif']
     else:
-        macd_area = abs(macd_area)
+        # 只加绿柱子
+        macd_area = abs(unformed_df[unformed_df['macd'] < 0]['macd'].sum())
         peak_dif = unformed_df.loc[unformed_df['low'].idxmin(), 'dif']
 
     return {
@@ -217,20 +221,24 @@ def analyze_unformed_segment(df, last_bi):
     }
 
 # ==========================================
-# 6. 数据获取 (缓存优化)
+# 6. 数据获取 (修改：只取最近2年)
 # ==========================================
-@st.cache_data(ttl=3600) # 缓存1小时
+@st.cache_data(ttl=3600) 
 def get_stock_data(code, freq='d'):
     """ 从东方财富获取优质数据 """
     pure_code = code.split('.')[-1]
     try:
+        # 【修改点】：动态计算起始时间 (最近730天/约2年)
+        # 2年数据足以让MACD计算稳定，同时大幅减少下载量
+        start_date = (datetime.date.today() - datetime.timedelta(days=730)).strftime('%Y%m%d')
+        end_date = datetime.date.today().strftime('%Y%m%d')
+
         if freq == 'd':
-            start_date = "20200101" 
-            end_date = datetime.date.today().strftime('%Y%m%d')
             df = ak.stock_zh_a_hist(symbol=pure_code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
             if not df.empty:
                 df = df.rename(columns={'日期':'date','开盘':'open','最高':'high','最低':'low','收盘':'close','成交量':'volume'})
         else:
+            # 30分钟数据，Akshare接口通常默认就只有最近几个月，保持默认即可
             df = ak.stock_zh_a_hist_min_em(symbol=pure_code, period='30', adjust='qfq')
             if not df.empty:
                 df = df.rename(columns={'时间':'date','开盘':'open','最高':'high','最低':'low','收盘':'close','成交量':'volume'})
@@ -249,36 +257,36 @@ def get_stock_data(code, freq='d'):
 # Main App Logic
 # ==========================================
 def main():
-    st.title("🧙‍♂️ AI缠论投喂系统 v4.0 (混血旗舰版)")
+    st.title("🧙‍♂️ AI缠论投喂系统 v5.0 (极速实战版)")
     st.markdown("""
-    **特性**: 东财数据源 | 通达信MACD算法 | 视觉兼容画笔 | 逻辑K线计数
+    **版本特性**: 
+    1. **数据提速**：仅获取最近2年数据，秒级响应。
+    2. **实战力度**：MACD面积仅统计同向柱体（向上只看红，向下只看绿）。
     """)
     
     with st.sidebar:
         st.header("参数设置")
-        code = st.text_input("输入股票代码", value="600885", help="支持A股代码，如 600519 或 000001")
+        code = st.text_input("输入股票代码", value="600885", help="支持A股代码，如 600519")
         run_btn = st.button("开始分析", type="primary")
-        st.info("数据来源：东方财富 (Akshare)\n\n缓存机制：数据缓存1小时")
 
     if run_btn and code:
         try:
             with st.spinner(f'正在深入分析 {code} ...'):
-                # 1. 获取并计算数据
                 df_d = get_stock_data(code, 'd')
                 if df_d.empty:
-                    st.warning("未获取到日线数据，请检查代码是否正确。")
+                    st.warning("未获取到数据，请检查代码。")
                     return
                 df_d = calculate_macd(df_d)
                 
                 # 数据验钞机
-                with st.expander("🔍 数据验钞机 (点击展开核对数据)"):
-                    st.markdown("请核对最后3日的MACD数据，确保与通达信/同花顺一致：")
-                    cols_to_show = ['date', 'close', 'dif', 'dea', 'macd', 'volume']
-                    st.dataframe(df_d.tail(5)[cols_to_show].style.format({
+                with st.expander("🔍 数据验钞机 (点击展开)"):
+                    st.markdown("请核对最后3日的MACD数据：")
+                    cols_to_show = ['date', 'close', 'dif', 'dea', 'macd']
+                    st.dataframe(df_d.tail(3)[cols_to_show].style.format({
                         'close': '{:.2f}', 'dif': '{:.3f}', 'dea': '{:.3f}', 'macd': '{:.3f}'
                     }))
                 
-                # 2. 计算结构
+                # 计算结构
                 bi_d = calculate_chanlun_structure(df_d)
                 
                 df_30 = get_stock_data(code, '30')
@@ -287,12 +295,14 @@ def main():
                     df_30 = calculate_macd(df_30)
                     bi_30 = calculate_chanlun_structure(df_30)
                 
-                # 3. 生成提示词
+                # 生成提示词
                 prompt = f"""
-基于《AI缠论分析系统最高指令 v4.0 (混血版)》，数据源已通过通达信校准，笔划分采用视觉兼容模式。
-**分析规则：**
-1. **画笔逻辑**：包含视觉保护机制，防大K线合并丢失；引入时间跨度补偿。
-2. **力度模型**：MACD采用净面积（红绿抵扣），更真实反映多空博弈。
+基于《AI缠论分析系统最高指令 v5.0 (极速版)》，数据源通达信对齐。
+**核心规则：**
+1. **力度计算**：采用【纯粹动能逻辑】。
+   - 向上笔：仅累加MACD红柱面积（忽略回调绿柱）。
+   - 向下笔：仅累加MACD绿柱面积（忽略反抽红柱）。
+2. **画笔逻辑**：视觉兼容模式（逻辑K线视角）。
 
 【分析标的】：{code}
 
@@ -306,19 +316,20 @@ def main():
                         s_str = bi['display_start_date'].strftime('%Y-%m-%d')
                         e_str = bi['display_end_date'].strftime('%Y-%m-%d')
                         bi_idx = len(bi_d) - (d_num - 1) + i
-                        prompt += f"- 笔{bi_idx} [{bi['direction']}]: {s_str} -> {e_str} | 价:{bi['start_price']}->{bi['end_price']} | 面积:{bi['macd_area']} | DIF极值:{bi['peak_dif']} | 均量:{bi['avg_vol']}万\n"
+                        # 增加说明：纯红/纯绿面积
+                        area_desc = "红柱面积" if bi['direction'] == '向上' else "绿柱面积"
+                        prompt += f"- 笔{bi_idx} [{bi['direction']}]: {s_str} -> {e_str} | 价:{bi['start_price']}->{bi['end_price']} | {area_desc}:{bi['macd_area']} | DIF极值:{bi['peak_dif']} | 均量:{bi['avg_vol']}万\n"
                 
                 if bi_d:
                     unf = analyze_unformed_segment(df_d, bi_d[-1])
                     if unf:
+                        area_type = "红柱" if unf['current_dir'] == '向上' else "绿柱"
                         prompt += f"""
 【日线当下状态 (未成笔段)】
-最后一笔结束于 {bi_d[-1]['display_end_date'].strftime('%Y-%m-%d')}。
-**随后行情**: {unf['status']}
-- 运行时间: {unf['count']}交易日 (逻辑K线: {unf['logical_count']}根)
-- 走势方向: {unf['current_dir']}
-- 极值数据: 高{unf['high']} / 低{unf['low']} / 收{unf['close']}
-- 潜在力度: MACD净面积 {unf['macd_area']}, DIF极值 {unf['peak_dif']}
+- 运行: {unf['count']}天 (逻辑K线: {unf['logical_count']}根)
+- 方向: {unf['current_dir']} ({unf['status']})
+- 极值: 高{unf['high']} / 低{unf['low']} / 收{unf['close']}
+- 力度: MACD{area_type}面积 {unf['macd_area']}, DIF极值 {unf['peak_dif']}
 """
 
                 prompt += "\n=== 级别二：30分钟 (找买卖点) ===\n"
@@ -329,29 +340,30 @@ def main():
                         s_str = bi['display_start_date'].strftime('%m-%d %H:%M')
                         e_str = bi['display_end_date'].strftime('%m-%d %H:%M')
                         bi_idx = len(bi_30) - (d30_num - 1) + i
-                        prompt += f"- 笔{bi_idx} [{bi['direction']}]: {s_str} -> {e_str} | 价:{bi['start_price']}->{bi['end_price']} | 面积:{bi['macd_area']} | DIF极值:{bi['peak_dif']}\n"
+                        area_desc = "红积" if bi['direction'] == '向上' else "绿积"
+                        prompt += f"- 笔{bi_idx} [{bi['direction']}]: {s_str} -> {e_str} | 价:{bi['start_price']}->{bi['end_price']} | {area_desc}:{bi['macd_area']} | DIF极值:{bi['peak_dif']}\n"
                     
                     unf30 = analyze_unformed_segment(df_30, bi_30[-1])
                     if unf30:
                         prompt += f"""
 【30分钟当下状态】
-- 方向: {unf30['current_dir']} ({unf30['status']})
+- 方向: {unf30['current_dir']}
 - 结构: 物理{unf30['count']}根 / 逻辑{unf30['logical_count']}根
-- 力度: MACD净面积 {unf30['macd_area']}, DIF极值 {unf30['peak_dif']}
+- 力度: MACD{("红积" if unf30['current_dir'] == '向上' else "绿积")} {unf30['macd_area']}, DIF极值 {unf30['peak_dif']}
 """
                 else: prompt += "（数据不足）\n"
                 
                 prompt += """
 【你的任务】
-1. **日线定性**：基于“逻辑K线”视角判断当下结构是否稳固，结合MACD净面积分析背驰。
-2. **中枢精算**：请严格按照Min(g)/Max(d)输出中枢区间。
-3. **操作指令**：结合30分钟的逻辑K线结构，给出精确买卖点。
+1. **背驰判断**：基于新的“纯红/纯绿面积”逻辑，对比同向笔的力度衰竭情况。
+2. **中枢精算**：严格输出 ZG/ZD 区间。
+3. **策略**：结合30分钟买卖点提示。
 """
-                st.success("分析完成！请复制下方指令发送给 AI 模型：")
+                st.success("分析完成！")
                 st.code(prompt, language='text')
                 
         except Exception:
-            st.error("发生错误，请检查代码或重试")
+            st.error("发生错误，请检查代码")
             st.error(traceback.format_exc())
 
 if __name__ == "__main__":
