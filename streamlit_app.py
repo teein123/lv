@@ -9,8 +9,8 @@ import traceback
 # 页面配置
 # ==========================================
 st.set_page_config(
-    page_title="AI缠论投喂系统 v5.0",
-    page_icon="⚡",
+    page_title="AI缠论投喂系统 v6.0",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -41,20 +41,20 @@ def calculate_macd(df):
     return df
 
 # ==========================================
-# 2. 基础力度计算 (修改：同向柱子累计)
+# 2. 基础力度计算 (同向红绿柱逻辑)
 # ==========================================
 def get_segment_metrics_by_date(raw_df, start_date, end_date, direction):
     mask = (raw_df['date'] >= start_date) & (raw_df['date'] <= end_date)
     segment_df = raw_df.loc[mask].copy()
     if segment_df.empty: return 0.0, 0.0, 0.0
 
-    # 【修改点】：只统计同向颜色的柱子面积
+    # 【规则】：上涨只算红柱，下跌只算绿柱
     if direction == '向上':
-        # 向上笔：只加红柱子 (macd > 0)
+        # 只加红柱子 (macd > 0)
         macd_area = segment_df[segment_df['macd'] > 0]['macd'].sum()
         idx_price = segment_df['high'].idxmax()
     else:
-        # 向下笔：只加绿柱子 (macd < 0)，取绝对值
+        # 只加绿柱子 (macd < 0)，取绝对值
         macd_area = abs(segment_df[segment_df['macd'] < 0]['macd'].sum())
         idx_price = segment_df['low'].idxmin()
     
@@ -69,6 +69,7 @@ def get_segment_metrics_by_date(raw_df, start_date, end_date, direction):
 def preprocess_inclusion(df):
     if len(df) < 2: return df
     raw_data = df.to_dict('records')
+    # 初始化 real_date
     for d in raw_data: 
         if 'real_date' not in d: d['real_date'] = d['date']
 
@@ -85,7 +86,7 @@ def preprocess_inclusion(df):
         
         if is_cur_inside or is_last_inside:
             last['volume'] = float(last['volume']) + float(cur['volume'])
-            last['date'] = cur['date'] 
+            last['date'] = cur['date'] # 逻辑时间推移
             last['close'] = cur['close']
             
             # 视觉保护逻辑
@@ -101,6 +102,8 @@ def preprocess_inclusion(df):
                     last['high'] = min(last['high'], cur['high'])
                     last['low'] = min(last['low'], cur['low'])
             
+            # 【重要】更新真实时间 (real_date)
+            # 如果新K线创造了新的极值，则更新真实时间；否则保留原极值时间
             if direction == 1 and cur['high'] == last['high']: last['real_date'] = cur['real_date']
             elif direction == -1 and cur['low'] == last['low']: last['real_date'] = cur['real_date']
         else:
@@ -111,7 +114,7 @@ def preprocess_inclusion(df):
     return pd.DataFrame(processed)
 
 # ==========================================
-# 4. 缠论分笔核心 (复杂规则版)
+# 4. 缠论分笔核心 (已修复MACD计算范围)
 # ==========================================
 def calculate_chanlun_structure(df):
     if len(df) < 10: return [] 
@@ -163,7 +166,9 @@ def calculate_chanlun_structure(df):
         start_node = stack[i-1]
         end_node = stack[i]
         bi_dir = '向上' if start_node['type'] == -1 else '向下'
-        a, p, v = get_segment_metrics_by_date(df, start_node['date'], end_node['date'], bi_dir)
+        
+        # 【核心修复】：使用 real_date (真实极值时间) 截止，确保面积不被多算
+        a, p, v = get_segment_metrics_by_date(df, start_node['real_date'], end_node['real_date'], bi_dir)
         
         bi_list.append({
             'start_date': start_node['date'], 'end_date': end_node['date'],
@@ -176,7 +181,7 @@ def calculate_chanlun_structure(df):
     return bi_list
 
 # ==========================================
-# 5. 智能量能分析 (修改：同向柱子累计)
+# 5. 智能量能分析 (同向红绿柱逻辑)
 # ==========================================
 def analyze_unformed_segment(df, last_bi):
     last_end_date = last_bi['end_date']
@@ -201,13 +206,11 @@ def analyze_unformed_segment(df, last_bi):
     logical_count = len(logical_df)
     current_avg_vol = unformed_df['volume'].mean() / 10000
 
-    # 【修改点】：同步基础力度的计算逻辑
+    # 力度计算：同向逻辑
     if current_dir == '向上':
-        # 只加红柱子
         macd_area = unformed_df[unformed_df['macd'] > 0]['macd'].sum()
         peak_dif = unformed_df.loc[unformed_df['high'].idxmax(), 'dif']
     else:
-        # 只加绿柱子
         macd_area = abs(unformed_df[unformed_df['macd'] < 0]['macd'].sum())
         peak_dif = unformed_df.loc[unformed_df['low'].idxmin(), 'dif']
 
@@ -221,15 +224,13 @@ def analyze_unformed_segment(df, last_bi):
     }
 
 # ==========================================
-# 6. 数据获取 (修改：只取最近2年)
+# 6. 数据获取
 # ==========================================
 @st.cache_data(ttl=3600) 
 def get_stock_data(code, freq='d'):
-    """ 从东方财富获取优质数据 """
+    """ 从东方财富获取优质数据 (最近2年) """
     pure_code = code.split('.')[-1]
     try:
-        # 【修改点】：动态计算起始时间 (最近730天/约2年)
-        # 2年数据足以让MACD计算稳定，同时大幅减少下载量
         start_date = (datetime.date.today() - datetime.timedelta(days=730)).strftime('%Y%m%d')
         end_date = datetime.date.today().strftime('%Y%m%d')
 
@@ -238,7 +239,6 @@ def get_stock_data(code, freq='d'):
             if not df.empty:
                 df = df.rename(columns={'日期':'date','开盘':'open','最高':'high','最低':'low','收盘':'close','成交量':'volume'})
         else:
-            # 30分钟数据，Akshare接口通常默认就只有最近几个月，保持默认即可
             df = ak.stock_zh_a_hist_min_em(symbol=pure_code, period='30', adjust='qfq')
             if not df.empty:
                 df = df.rename(columns={'时间':'date','开盘':'open','最高':'high','最低':'low','收盘':'close','成交量':'volume'})
@@ -257,11 +257,12 @@ def get_stock_data(code, freq='d'):
 # Main App Logic
 # ==========================================
 def main():
-    st.title("🧙‍♂️ AI缠论投喂系统 v5.0 (极速实战版)")
+    st.title("🧙‍♂️ AI缠论投喂系统 v6.0 (最终修复版)")
     st.markdown("""
     **版本特性**: 
-    1. **数据提速**：仅获取最近2年数据，秒级响应。
-    2. **实战力度**：MACD面积仅统计同向柱体（向上只看红，向下只看绿）。
+    1. **MACD精度修正**：面积计算精确对齐K线真实极值时间，消除包含处理带来的误差。
+    2. **实战力度**：向上笔只算红柱，向下笔只算绿柱。
+    3. **视觉兼容**：保护大阴大阳线不被算法吞没。
     """)
     
     with st.sidebar:
@@ -297,11 +298,11 @@ def main():
                 
                 # 生成提示词
                 prompt = f"""
-基于《AI缠论分析系统最高指令 v5.0 (极速版)》，数据源通达信对齐。
+基于《AI缠论分析系统最高指令 v6.0》，数据源通达信对齐，MACD面积计算已修正为真实时间窗口。
 **核心规则：**
-1. **力度计算**：采用【纯粹动能逻辑】。
-   - 向上笔：仅累加MACD红柱面积（忽略回调绿柱）。
-   - 向下笔：仅累加MACD绿柱面积（忽略反抽红柱）。
+1. **力度计算**：采用【同向柱体累计】。
+   - 向上笔：仅累加MACD红柱面积。
+   - 向下笔：仅累加MACD绿柱面积。
 2. **画笔逻辑**：视觉兼容模式（逻辑K线视角）。
 
 【分析标的】：{code}
@@ -316,7 +317,6 @@ def main():
                         s_str = bi['display_start_date'].strftime('%Y-%m-%d')
                         e_str = bi['display_end_date'].strftime('%Y-%m-%d')
                         bi_idx = len(bi_d) - (d_num - 1) + i
-                        # 增加说明：纯红/纯绿面积
                         area_desc = "红柱面积" if bi['direction'] == '向上' else "绿柱面积"
                         prompt += f"- 笔{bi_idx} [{bi['direction']}]: {s_str} -> {e_str} | 价:{bi['start_price']}->{bi['end_price']} | {area_desc}:{bi['macd_area']} | DIF极值:{bi['peak_dif']} | 均量:{bi['avg_vol']}万\n"
                 
@@ -355,7 +355,7 @@ def main():
                 
                 prompt += """
 【你的任务】
-1. **背驰判断**：基于新的“纯红/纯绿面积”逻辑，对比同向笔的力度衰竭情况。
+1. **背驰判断**：基于修正后的MACD面积（真实时间窗口）判断趋势衰竭。
 2. **中枢精算**：严格输出 ZG/ZD 区间。
 3. **策略**：结合30分钟买卖点提示。
 """
