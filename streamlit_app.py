@@ -1,21 +1,3 @@
-这是一个基于 **Streamlit** 重构的版本。Streamlit 是 Python 中最快构建数据应用的框架，非常适合这种从命令行脚本转图形界面的需求。
-
-### 主要改动点：
-1.  **UI 交互**：将 `input()` 替换为 `st.text_input` 和 `st.button`。
-2.  **缓存机制**：使用 `@st.cache_data` 缓存数据请求，避免每次刷新页面都重新请求接口（防止被封和提高速度）。
-3.  **展示方式**：使用 `st.code` 直接生成可复制的 AI 提示词，使用 `st.dataframe` 展示验钞机数据。
-4.  **状态反馈**：使用 `st.spinner` 或 `st.status` 显示“下载中...”的状态。
-
-### 如何运行：
-1.  安装 Streamlit: `pip install streamlit akshare pandas numpy requests`
-2.  保存下方代码为 `app.py`
-3.  在终端运行: `streamlit run app.py`
-
----
-
-### Streamlit 版本代码 (`app.py`)
-
-```python
 import streamlit as st
 import akshare as ak
 import pandas as pd
@@ -446,4 +428,3 @@ def main():
 
 if __name__ == "__main__": 
     main()
-```
